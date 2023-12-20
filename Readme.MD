@@ -1,0 +1,1 @@
+npx hardhat node --fork https://powerful-misty-pool.bsc.discover.quiknode.pro/23056ec2896615e0bbb409fa442e3ccebf85fd01
