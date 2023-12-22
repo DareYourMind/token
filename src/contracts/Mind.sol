@@ -18,6 +18,9 @@ contract Mind is Ownable, ERC20 {
     error AlreadyCalled();
     error InLiquidityAdd();
     error NotManager();
+    error ExceedsMaxTxAmount();
+    error InSwap();
+
 
     event SwapFees(uint256 takeDev, uint256 takeMarketing, uint256 takeBurn);
 
@@ -40,13 +43,17 @@ contract Mind is Ownable, ERC20 {
 
     bool public tradingActive;
     bool private _liquidityAdded;
-
     bool private _inLiquidityAdd;
+    bool internal _inSwap;
 
     uint256 private constant COOLDOWN = 60 seconds;
     uint256 private constant SWAP_FEES_AT = 1000 ether;
     uint256 private _totalSupply;
 
+    uint256 public takeSell;
+    uint256 public takeBuy;
+
+    //anti bot, check tradings that started the same block when liquidity is added
     uint256 public tradingStartBlock;
 
     mapping(address => bool) public taxExcluded;
@@ -57,6 +64,12 @@ contract Mind is Ownable, ERC20 {
         _inLiquidityAdd = true;
         _;
         _inLiquidityAdd = false;
+    }
+
+    modifier lockSwap {
+        _inSwap = true;
+        _;
+        _inSwap = false;
     }
 
     modifier onlyManager() {
@@ -85,9 +98,12 @@ contract Mind is Ownable, ERC20 {
         if (_liquidityAdded) revert AlreadyCalled();
         _liquidityAdded = true;
         _mint(address(this), tokens);
-        _mint(marketingWallet, tokens * 2/100);
 
-        _addLiquidity(tokens, msg.value);
+        //set the tokens for dev and marketing, 2.5% each
+        _rawTransfer(address(this), marketingWallet, tokens*25/1000); //2.5%
+        _rawTransfer(address(this), devWallet, tokens*25/1000); //2.5%
+
+        _addLiquidity(balanceOf(address(this)), msg.value);
 
         if (!tradingActive) {
             tradingActive = true;
@@ -127,35 +143,49 @@ contract Mind is Ownable, ERC20 {
         bot[account] = true;
     }
 
-    function removeBot(address account) public  {
-        bot[account] = false;
-    }
-
     function _transfer(address sender, address recipient, uint256 amount) internal override {
         if (taxExcluded[sender] || taxExcluded[recipient]) {
             _rawTransfer(sender, recipient, amount);
             return;
         }
+        
+        //anti bot
         if (bot[sender]) revert SenderIsBot();
         if (bot[recipient]) revert RecipientIsBot();
 
-        uint256 send = amount; // i.e: 1000
-        uint256 takeFees;
+        //locked in swap
+        if(_inSwap) revert InSwap();
 
-        //TODO: calculate fees in both sell and buy
-        // if ((sender == pair && tradingActive) || (recipient == pair && tradingActive)) {
-        //     // Buy or Sell, apply buy fee schedule
-        //     takeFees = (amount * FEES) / 100; //5%
-        //     if (sender == pair) _takeFeesFromPair(takeFees);
-        //     else if (recipient == pair) _takeFeesFromSeller(sender, takeFees);
-        // }
-        unchecked {
+        //Anti whale 
+        uint256 maxTxAmount = totalSupply() * 5 / 1000; //max 5% transfer
+        if(amount > maxTxAmount) revert ExceedsMaxTxAmount();
+
+        uint256 send = amount;  // i.e: 1000 MIND 
+
+        //calculate fees in both sell and buy
+        if (sender == pair && tradingActive) {
+            //buy
+            uint256 takeFees = amount * 5 / 100;
+            _rawTransfer(pair, address(this), takeFees);
             send -= takeFees;
+            takeBuy += takeFees;
+            
+        } else if (recipient == pair && tradingActive) {
+            //sell
+            uint256 takeFees = amount * 7 / 100;
+            _rawTransfer(sender, address(this), takeFees);
+            send -= takeFees;
+            takeSell += takeFees;
         }
 
-        //            pair    buyer     900
+        //transfer remaining
         _rawTransfer(sender, recipient, send);
 
+        if(balanceOf(address(this)) >= SWAP_FEES_AT) {
+
+        }
+
+        //add bot
         if (tradingActive && block.number == tradingStartBlock && !taxExcluded[tx.origin]) {
             if (tx.origin == address(pair)) {
                 if (sender == address(pair)) {
@@ -208,26 +238,32 @@ contract Mind is Ownable, ERC20 {
         return _balances[account];
     }
 
-    function swapAll() external {
-        if (_inLiquidityAdd) revert InLiquidityAdd();
+    function _swap() internal lockSwap {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = _router.WETH();
 
-        _swapFees();
+        uint256 amount = SWAP_FEES_AT;
+
+        //burn 1%
+        uint256 takeBurn = amount * 1 / 100;
+        _burn(address(this), takeBurn);
+
+        amount -= takeBurn;
+        _approve(address(this), address(_router), amount);
+
+        _router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        //calculate the portions for both buy and sell
+
+       
     }
-
-    //TODO: calculate fees
-    function _swapFees() private {
-        uint256 fees = balanceOf(address(this));
-        // uint256 takeMarketing = (fees * MARKETING_RATE) / 100;
-
-        // _swapTokensForETH(takeMarketing);
-
-        // uint256 ethBalance = address(this).balance;
-
-        // marketingWallet.transfer(ethBalance);
-
-        // emit SwapFees(takeMarketing, ethBalance);
-    }
-
 
     function _swapTokensForETH(uint256 amount) private {
         address[] memory path = new address[](2);
@@ -242,6 +278,15 @@ contract Mind is Ownable, ERC20 {
             address(this),
             block.timestamp
         );
+    }
+
+    function withdrawFees() external {
+        uint256 buyPortion = takeBuy;
+        uint256 sellPortion = takeSell;
+        takeBuy = 0;
+        takeSell = 0;
+        //TODO: calculate the portions from both buy and sell, distribute to marketing and dev wallets
+        //make this nonreentrant
     }
 
     function totalSupply() public view override returns (uint256) {
