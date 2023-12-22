@@ -8,6 +8,11 @@ import '@openzeppelin/contracts/token/ERC20/ERC20.sol';
 import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol';
 import '@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol';
 
+/**  
+@dev 
+MIND token will take 7% fees for each sell (3% marketing, 3% dev, 1% burn) 
+MIND token will take 5% fees for each buy (2% marketing, 2% dev, 1% burn) 
+*/
 contract Mind is Ownable, ERC20 {
     error BotAlreadyAdded();
     error AccountIspancakeRouter();
@@ -23,16 +28,6 @@ contract Mind is Ownable, ERC20 {
 
 
     event SwapFees(uint256 takeDev, uint256 takeMarketing, uint256 takeBurn);
-
-    //Sell Tax total 7%
-    uint256 private constant SELL_TAX_DEV = 3; //3%
-    uint256 private constant SELL_TAX_MARKETING = 3; //3%
-    uint256 private constant SELL_TAX_BURN = 1; //1%
-
-    //Buy Tax total 5%
-    uint256 private constant BUY_TAX_DEV = 2; //2%
-    uint256 private constant BUY_TAX_MARKETING = 2; //2%
-    uint256 private constant BUY_TAX_BURN = 1; //1%
 
     IUniswapV2Router02 private immutable _router;
 
@@ -50,8 +45,6 @@ contract Mind is Ownable, ERC20 {
     uint256 private constant SWAP_FEES_AT = 1000 ether;
     uint256 private _totalSupply;
 
-    uint256 public takeSell;
-    uint256 public takeBuy;
 
     //anti bot, check tradings that started the same block when liquidity is added
     uint256 public tradingStartBlock;
@@ -164,25 +157,24 @@ contract Mind is Ownable, ERC20 {
 
         //calculate fees in both sell and buy
         if (sender == pair && tradingActive) {
-            //buy
+            //buy 5% fees
             uint256 takeFees = amount * 5 / 100;
             _rawTransfer(pair, address(this), takeFees);
             send -= takeFees;
-            takeBuy += takeFees;
             
         } else if (recipient == pair && tradingActive) {
-            //sell
+            //sell 7% fees
             uint256 takeFees = amount * 7 / 100;
             _rawTransfer(sender, address(this), takeFees);
             send -= takeFees;
-            takeSell += takeFees;
         }
 
         //transfer remaining
         _rawTransfer(sender, recipient, send);
 
+        //swap when balance reaches 1000 MIND
         if(balanceOf(address(this)) >= SWAP_FEES_AT) {
-
+            _swap();
         }
 
         //add bot
@@ -197,18 +189,6 @@ contract Mind is Ownable, ERC20 {
                 _addBot(tx.origin);
             }
         }
-    }
-
-    function _takeFeesFromSeller(address account, uint256 amount) private {
-        //      from(seller), to(this)  , 200
-        _rawTransfer(account, address(this), amount);
-        emit Transfer(account, address(this), amount);
-    }
-
-    function _takeFeesFromPair(uint256 amount) private {
-        //   from(pair)  , to(this)     , 100
-        _rawTransfer(pair, address(this), amount);
-        emit Transfer(pair, address(this), amount);
     }
 
     // modified from OpenZeppelin ERC20
@@ -245,11 +225,10 @@ contract Mind is Ownable, ERC20 {
 
         uint256 amount = SWAP_FEES_AT;
 
-        //burn 1%
-        uint256 takeBurn = amount * 1 / 100;
-        _burn(address(this), takeBurn);
+        //burn 1%, 10 MIND
+        _burn(address(this), 10);
 
-        amount -= takeBurn;
+        amount -= 10;
         _approve(address(this), address(_router), amount);
 
         _router.swapExactTokensForETHSupportingFeeOnTransferTokens(
@@ -259,10 +238,6 @@ contract Mind is Ownable, ERC20 {
             address(this),
             block.timestamp
         );
-
-        //calculate the portions for both buy and sell
-
-       
     }
 
     function _swapTokensForETH(uint256 amount) private {
@@ -280,13 +255,11 @@ contract Mind is Ownable, ERC20 {
         );
     }
 
+    //50% fees for marketing, 50% fees for dev
     function withdrawFees() external {
-        uint256 buyPortion = takeBuy;
-        uint256 sellPortion = takeSell;
-        takeBuy = 0;
-        takeSell = 0;
-        //TODO: calculate the portions from both buy and sell, distribute to marketing and dev wallets
-        //make this nonreentrant
+        uint256 contractEthBalance = address(this).balance;
+        marketingWallet.transfer(contractEthBalance/2);
+        devWallet.transfer(address(this).balance);
     }
 
     function totalSupply() public view override returns (uint256) {
