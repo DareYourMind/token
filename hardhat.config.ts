@@ -72,9 +72,9 @@ const config: HardhatUserConfig = {
       ":PingPong$",
       ":WETH$",
       ":MarketingSplitter$",
-      ":IPancakeFactory$",
-      ":IPancakeRouter02$",
-      ":IPancakePair$"
+      ":IUniswapFactory$",
+      ":IUniswapRouter02$",
+      ":IUniswapPair$"
     ]
   }
 

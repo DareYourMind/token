@@ -2,9 +2,9 @@
 
 pragma solidity ^0.8.17;
 
-import "./IPancakeRouter01.sol";
+import "./IUniswapRouter01.sol";
 
-interface IPancakeRouter02 is IPancakeRouter01 {
+interface IUniswapRouter02 is IUniswapRouter01 {
     function removeLiquidityETHSupportingFeeOnTransferTokens(
         address token,
         uint liquidity,
