@@ -8,6 +8,7 @@
  import 'hardhat-abi-exporter';
  import '@typechain/hardhat'
 import { HardhatUserConfig } from 'hardhat/types/config';
+import { ethers } from 'ethers';
 
 
  const {
@@ -16,6 +17,18 @@ import { HardhatUserConfig } from 'hardhat/types/config';
   QUICK_NODE_BSC_API_KEY,
   ALCHEMY_MUMBAI_API_KEY
 } = process.env;
+
+function generateRandomAccounts(numAccounts: number) {
+  const accounts = [];
+  for (let i = 0; i < numAccounts; i++) {
+    const wallet = ethers.Wallet.createRandom();
+    accounts.push({
+      privateKey: wallet.privateKey,
+      balance: "10000000000000000000000000", // Set initial balance to 100 ETH
+    });
+  }
+  return accounts;
+}
  
 const config: HardhatUserConfig = {
   solidity: {
@@ -29,6 +42,10 @@ const config: HardhatUserConfig = {
   },
   defaultNetwork: "localhost",
   networks: {
+    hardhat: {
+      initialBaseFeePerGas: 0,  // Set base fee to 0 for predictable gas prices
+      accounts: generateRandomAccounts(10),
+    },
     localhost: {},
     bsc: {
       url: `https://powerful-misty-pool.bsc.discover.quiknode.pro/${QUICK_NODE_BSC_API_KEY}/`,

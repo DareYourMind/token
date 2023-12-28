@@ -30,9 +30,11 @@ contract Mind is Ownable, ERC20 {
     error UnableToGetWethBalance();
     error LiquidityLocked();
     error ReentrancyGuard();
+    error UableToInitalLock();
 
     IUniswapV2Router02 private immutable _router;
 
+    address private constant UNCX_LOCKER = 0xaDB2437e6F65682B85F814fBc12FeC0508A7B1D0;
     address public pair;
     address payable public marketingWallet;
     address payable public devWallet;
@@ -44,8 +46,11 @@ contract Mind is Ownable, ERC20 {
     bool private _locked;
 
     uint256 private constant SWAP_FEES_AT = 1000 ether;
+    uint256 private constant INITIAL_LIQUIDITY_LOCK_TIME = 3 * 30 * 24 * 60 * 60; //3 months initial liquidity lock
+    uint256 private constant LOCK_PRICE = 100 ether; //price to pay for inital lock
     uint256 private _totalSupply;
     uint256 private _initialLiquidityWeth;
+    uint256 public nextLPUnlock;
 
     //anti bot, check tradings that started the same block when liquidity is added
     uint256 public tradingStartBlock;
@@ -93,7 +98,7 @@ contract Mind is Ownable, ERC20 {
         
     }
 
-    function addLiquidity(uint256 tokens) external payable onlyOwner {
+    function addLiquidity(uint256 tokens) external payable onlyOwner nonReentrant() {
         if (_liquidityAdded) revert AlreadyCalled();
         _liquidityAdded = true;
         _mint(address(this), tokens);
@@ -102,7 +107,7 @@ contract Mind is Ownable, ERC20 {
         _rawTransfer(address(this), marketingWallet, (tokens * 25) / 1000); //2.5%
         _rawTransfer(address(this), devWallet, (tokens * 25) / 1000); //2.5%
 
-        _addLiquidity(balanceOf(address(this)), msg.value);
+        _addLiquidity(balanceOf(address(this)), msg.value - LOCK_PRICE);
 
         if (!tradingActive) {
             tradingActive = true;
@@ -124,7 +129,7 @@ contract Mind is Ownable, ERC20 {
         taxExcluded[pair] = false;
     }
 
-    function _addLiquidity(uint256 tokens, uint256 value) private {
+    function _addLiquidity(uint256 tokens, uint256 value) private  {
         _approve(address(this), address(_router), tokens);
         (, uint amountETH, ) = _router.addLiquidityETH{value: value}(
             address(this),
@@ -136,6 +141,7 @@ contract Mind is Ownable, ERC20 {
             block.timestamp
         );
         _initialLiquidityWeth = amountETH;
+        _initalLock();
     }
 
     function pairBalance() public view returns (uint256) {
@@ -144,6 +150,26 @@ contract Mind is Ownable, ERC20 {
         // Get the balance of LP tokens held by this contract
         uint256 liquidity = uniswapV2Pair.balanceOf(address(this));
         return liquidity;
+    }
+
+    function _initalLock() private {
+        IUniswapPair uniswapV2Pair = IUniswapPair(pair);
+        uint256 liquidity = uniswapV2Pair.balanceOf(address(this));
+        uniswapV2Pair.approve(UNCX_LOCKER, liquidity);
+        uint256 lpUnlockDate = block.timestamp + INITIAL_LIQUIDITY_LOCK_TIME;
+        (bool success, ) = UNCX_LOCKER.call{value: LOCK_PRICE}(
+            abi.encodeWithSignature(
+                "lockLPToken(address,uint256,uint256,address,bool,address)", 
+                pair, 
+                liquidity,
+                nextLPUnlock,
+                address(0),
+                true,
+                address(this)
+            )
+        );
+        if(!success) revert UableToInitalLock();
+        nextLPUnlock = lpUnlockDate;
     }
 
     function _removeLiquidity() private {
