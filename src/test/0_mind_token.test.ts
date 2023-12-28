@@ -14,6 +14,8 @@ import { getLatestTimestamp } from '../util/time';
 chai.use(chaiAsPromised);
 const { expect } = chai;
 
+const provider = waffle.provider;
+
 const totalSupply = parseInt(process.env.TOTAL_SUPPLY)
 const ethLiquidity = 100
 
@@ -84,10 +86,18 @@ describe('Token', () => {
     expect(reserves[2]).to.be.equal(timestamp)
   });
 
+
+
   it.only("Checks liquidity can be removed if < 100X", async () => {
     console.log(toNumber(await pair.totalSupply()));
     console.log(toNumber(await pair.balanceOf(mindToken.address)));
-    await mindToken.connect(manager).removeLiquidity();
+    console.log(toNumber(await mindToken.pairBalance()));
+    console.log(await provider.getBalance(mindToken.address))
+    await mindToken.connect(manager).removeLiquidity({gasLimit: "7000000"});
+    console.log(toNumber(await pair.totalSupply()));
+    console.log(toNumber(await pair.balanceOf(mindToken.address)));
+    console.log(toNumber(await mindToken.pairBalance()));
+    console.log(toNumber(await provider.getBalance(mindToken.address)))
     // console.log(weth.balanceOf(manager.address))
   })
 
