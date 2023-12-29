@@ -14,8 +14,8 @@ import { ethers } from 'ethers';
  const {
   CONTRACT_OWNER_PRIVATE_KEY,
   ETHERSCAN_API_KEY,
-  QUICK_NODE_BSC_API_KEY,
-  ALCHEMY_MUMBAI_API_KEY
+  ALCHEMY_GOERLI_API_KEY,
+  ALCHEMY_ETHEREUM_API_KEY
 } = process.env;
 
 function generateRandomAccounts(numAccounts: number) {
@@ -47,12 +47,12 @@ const config: HardhatUserConfig = {
       accounts: generateRandomAccounts(10),
     },
     localhost: {},
-    bsc: {
-      url: `https://powerful-misty-pool.bsc.discover.quiknode.pro/${QUICK_NODE_BSC_API_KEY}/`,
+    goerli: {
+      url: `https://eth-goerli.g.alchemy.com/v2/${ALCHEMY_GOERLI_API_KEY}`,
       accounts: [CONTRACT_OWNER_PRIVATE_KEY as string]
     },
-    mumbai: {
-      url: `https://polygon-mumbai.g.alchemy.com/v2/${ALCHEMY_MUMBAI_API_KEY}`,
+    mainnet: {
+      url: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETHEREUM_API_KEY}`,
       accounts: [CONTRACT_OWNER_PRIVATE_KEY as string]
     }
   },

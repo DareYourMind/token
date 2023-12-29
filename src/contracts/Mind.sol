@@ -31,14 +31,16 @@ contract Mind is Ownable, ERC20 {
     error LiquidityLocked();
     error ReentrancyGuard();
     error UableToInitalLock();
+    error ExceedsMaxTransfer();
 
     IUniswapV2Router02 private immutable _router;
 
-    address private constant UNCX_LOCKER = 0xaDB2437e6F65682B85F814fBc12FeC0508A7B1D0;
+    address private constant UNCX_LOCKER = 0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214;
     address public pair;
     address payable public marketingWallet;
     address payable public devWallet;
     address public managerWallet;
+    address public bridgeWallet;
 
     bool public tradingActive;
     bool private _liquidityAdded;
@@ -47,10 +49,11 @@ contract Mind is Ownable, ERC20 {
 
     uint256 private constant SWAP_FEES_AT = 1000 ether;
     uint256 private constant INITIAL_LIQUIDITY_LOCK_TIME = 3 * 30 * 24 * 60 * 60; //3 months initial liquidity lock
-    uint256 private constant LOCK_PRICE = 100 ether; //price to pay for inital lock
+    uint256 private constant LOCK_PRICE = 0.1 ether; //price to pay for inital lock
     uint256 private _totalSupply;
     uint256 private _initialLiquidityWeth;
     uint256 public nextLPUnlock;
+    uint256 public constant MAX_TRANSFER_PERCENTAGE_OF_TSUPLY = 3; // 3% of total supply max trade
 
     //anti bot, check tradings that started the same block when liquidity is added
     uint256 public tradingStartBlock;
@@ -83,7 +86,8 @@ contract Mind is Ownable, ERC20 {
         address uniswapRouter,
         address payable marketing,
         address payable dev,
-        address manager
+        address manager,
+        address bridge
     ) ERC20('MindMaze', 'MIND') {
         taxExcluded[marketing] = true;
         taxExcluded[dev] = true;
@@ -92,6 +96,7 @@ contract Mind is Ownable, ERC20 {
         marketingWallet = marketing;
         devWallet = dev;
         managerWallet = manager;
+        bridgeWallet = bridge;
         _router = IUniswapV2Router02(uniswapRouter);
         IUniswapV2Factory uniswapContract = IUniswapV2Factory(uniswapFactory);
         pair = uniswapContract.createPair(address(this), _router.WETH());
@@ -104,8 +109,9 @@ contract Mind is Ownable, ERC20 {
         _mint(address(this), tokens);
 
         //set the tokens for dev and marketing, 2.5% each
-        _rawTransfer(address(this), marketingWallet, (tokens * 25) / 1000); //2.5%
-        _rawTransfer(address(this), devWallet, (tokens * 25) / 1000); //2.5%
+        // _rawTransfer(address(this), marketingWallet, (tokens * 25) / 1000); //2.5%
+        // _rawTransfer(address(this), devWallet, (tokens * 25) / 1000); //2.5%
+        // _rawTransfer(address(this), bridgeWallet, tokens / 10); //10% of tokens go to the bridge wallet
 
         _addLiquidity(balanceOf(address(this)), msg.value - LOCK_PRICE);
 
@@ -219,6 +225,7 @@ contract Mind is Ownable, ERC20 {
         //anti bot
         if (bot[sender]) revert SenderIsBot();
         if (bot[recipient]) revert RecipientIsBot();
+        if (amount > totalSupply() * MAX_TRANSFER_PERCENTAGE_OF_TSUPLY/100) revert ExceedsMaxTransfer();
 
         //locked in swap
         if (_inSwap) revert InSwap();
@@ -229,18 +236,12 @@ contract Mind is Ownable, ERC20 {
 
         uint256 send = amount; // i.e: 1000 MIND
 
-        //calculate fees in both sell and buy
-        if (sender == pair && tradingActive) {
-            //buy 5% fees
-            uint256 takeFees = (amount * 5) / 100;
+        if ((sender == pair || recipient == pair) && tradingActive) {
+            //buy and sell 3% fees
+            uint256 takeFees = (amount * 3) / 100;
             _rawTransfer(pair, address(this), takeFees);
             send -= takeFees;
-        } else if (recipient == pair && tradingActive) {
-            //sell 7% fees
-            uint256 takeFees = (amount * 7) / 100;
-            _rawTransfer(sender, address(this), takeFees);
-            send -= takeFees;
-        }
+        } 
 
         //transfer remaining
         _rawTransfer(sender, recipient, send);

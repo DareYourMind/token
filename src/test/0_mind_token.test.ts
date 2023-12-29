@@ -17,13 +17,15 @@ const { expect } = chai;
 const provider = waffle.provider;
 
 const totalSupply = parseInt(process.env.TOTAL_SUPPLY)
-const ethLiquidity = 23645
+const ethLiquidity = 10
+const UNCX_LOCKER = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214";
 
 describe('Token', () => {
   let signer: SignerWithAddress;
   let marketing: SignerWithAddress;
   let dev: SignerWithAddress;
   let manager: SignerWithAddress;
+  let bridge: SignerWithAddress;
   let receiver: SignerWithAddress;
 
   let mindToken: Mind;
@@ -36,13 +38,13 @@ describe('Token', () => {
   let timestamp: number
 
   beforeEach(async () => {
-    [signer, marketing, dev, manager, receiver] = await ethers.getSigners();
+    [signer, marketing, dev, manager, bridge, receiver] = await ethers.getSigners();
 
     const tokenFactory = (await ethers.getContractFactory('Mind', signer)) as ContractFactory;
     factory = await ethers.getContractAt('IUniswapV2Factory', process.env.UNISWAP_FACTORY, signer);
     router = await ethers.getContractAt('IUniswapV2Router02', process.env.UNISWAP_ROUTER, signer);
 
-    mindToken = await tokenFactory.deploy(factory.address, router.address, marketing.address, dev.address, manager.address) as Mind;
+    mindToken = await tokenFactory.deploy(factory.address, router.address, marketing.address, dev.address, manager.address, bridge.address) as Mind;
     await mindToken.deployed();
 
     await mindToken.addLiquidity(toETH(totalSupply), { value: toETH(ethLiquidity) })
@@ -69,17 +71,18 @@ describe('Token', () => {
     const reserves = await getReserves(pair);
 
     //taken from line 119 https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol
-    const lpTokensExtectedSupply = Math.sqrt(toNumber(reserves[0]) * toNumber(reserves[1]));
+    const lpTokensExpectedSupply = Math.sqrt(toNumber(reserves[0]) * toNumber(reserves[1])) - 10**3;
+    console.log(lpTokensExpectedSupply)
 
     const pairSupply = toNumber(await pair.totalSupply() );
-    const pairLpHolderBalance = toNumber(await pair.balanceOf(mindToken.address));
+    const pairLpHolderBalance = toNumber(await pair.balanceOf(UNCX_LOCKER));
     const pairWethBalance = toNumber(await weth.balanceOf(pair.address));
     const pairTokenBalance = toNumber(await mindToken.balanceOf(pair.address));
 
-    expect(pairSupply).to.be.equal(lpTokensExtectedSupply)
-    // expect(pairLpHolderBalance).to.be.equal(lpTokensExtectedSupply)
-    // expect(pairWethBalance).to.be.equal(ethLiquidity)
-    // expect(pairTokenBalance).to.be.equal(toNumber(reserves[0]))
+    expect(pairSupply).to.be.equal(lpTokensExpectedSupply);
+    expect(pairLpHolderBalance).to.be.equal(lpTokensExpectedSupply);
+    expect(pairWethBalance).to.be.equal(ethLiquidity)
+    expect(pairTokenBalance).to.be.equal(toNumber(reserves[0]))
 
     // expect(toNumber(reserves[0])).to.be.equal(totalSupply - totalSupply*5/100)
     // expect(toNumber(reserves[1])).to.be.equal(ethLiquidity)
