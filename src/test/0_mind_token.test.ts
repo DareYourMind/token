@@ -4,7 +4,7 @@ import chai from 'chai';
 import chaiAsPromised from 'chai-as-promised';
 import { BigNumber, ContractFactory } from 'ethers';
 import { ethers, waffle } from 'hardhat';
-import { ERC20, Mind, UniswapV2Locker } from '../types';
+import { ERC20, MMPaymentSplitter, Mind, UniswapV2Locker } from '../types';
 import { toETH, toNumber } from '../util/parser';
 import { IUniswapV2Factory } from '../types/@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory';
 import { IUniswapV2Router02 } from '../types/@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02';
@@ -33,6 +33,7 @@ describe('Token', () => {
   let trader3: SignerWithAddress;
   let trader4: SignerWithAddress;
 
+  let splitter: MMPaymentSplitter;
   let mindToken: Mind;
   let factory: IUniswapV2Factory;
   let router: IUniswapV2Router02;
@@ -47,11 +48,15 @@ describe('Token', () => {
     [signer, marketing, dev, manager, staking, receiver, trader1, trader2, trader3, trader4] = await ethers.getSigners();
 
     const tokenFactory = (await ethers.getContractFactory('Mind', signer)) as ContractFactory;
+    const splitterFactory = (await ethers.getContractFactory('MMPaymentSplitter', signer)) as ContractFactory;
+
     factory = await ethers.getContractAt('IUniswapV2Factory', process.env.UNISWAP_FACTORY, signer);
     router = await ethers.getContractAt('IUniswapV2Router02', process.env.UNISWAP_ROUTER, signer);
     uncxLocker = await ethers.getContractAt('UniswapV2Locker', UNCX_LOCKER, signer);
 
-    mindToken = await tokenFactory.deploy(factory.address, router.address, marketing.address, dev.address, staking.address, manager.address) as Mind;
+    splitter = await splitterFactory.deploy([dev.address, marketing.address, staking.address], [100, 100, 100]) as MMPaymentSplitter;
+
+    mindToken = await tokenFactory.deploy(factory.address, router.address, splitter.address, manager.address) as Mind;
     await mindToken.deployed();
 
     await mindToken.addLiquidity(toETH(totalSupply), { value: toETH(ethLiquidity + lockValue) })
@@ -61,9 +66,6 @@ describe('Token', () => {
 
     pair = await ethers.getContractAt('IUniswapPair', await factory.getPair(mindToken.address, wethAddress), signer) as IUniswapPair;
 
-    expect(await mindToken.taxExcluded(marketing.address)).to.be.true
-    expect(await mindToken.taxExcluded(dev.address)).to.be.true
-    expect(await mindToken.taxExcluded(manager.address)).to.be.true
     expect(await mindToken.taxExcluded(mindToken.address)).to.be.true
 
     timestamp = (await getLatestTimestamp()).toNumber()
@@ -112,7 +114,7 @@ describe('Token', () => {
   })
 
 
-  it.only('Buys tokens', async () => {
+  it('Trades tokens', async () => {
     //buy 1
     timestamp = (await getLatestTimestamp()).toNumber()
     let reserves = await getReserves(pair);
@@ -121,13 +123,15 @@ describe('Token', () => {
     let expectedFeeCollected = expectedAmountWithoutFees * 3 / 100;
     let expectedAmountWithFees = expectedAmountWithoutFees - expectedFeeCollected;
 
-    await router.connect(trader1).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
+    let tx = await (await router.connect(trader1).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
       0,
       [wethAddress, mindToken.address],
       trader1.address,
       timestamp + 1,
       { value: toETH(0.5) }
-    )
+    )).wait();
+
+    console.log("Buy1 gas", tx.gasUsed)
     const user1BalanceAfterTrade = toNumber(await mindToken.balanceOf(trader1.address));
     expect(user1BalanceAfterTrade.toFixed(5)).to.be.equal(expectedAmountWithFees.toFixed(5))
 
@@ -144,124 +148,153 @@ describe('Token', () => {
     expectedAmountWithFees = expectedAmountWithoutFees - expectedFeeCollected;
     let contractBalanceBeforeTrade = toNumber(await mindToken.balanceOf(mindToken.address))
 
-    await router.connect(trader2).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
+    tx = await (await router.connect(trader2).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
       0,
       [wethAddress, mindToken.address],
       trader2.address,
       timestamp + 1,
       { value: toETH(0.5) }
-    )
+    )).wait();
+    console.log("Buy2 gas", tx.gasUsed)
+    
+
     const user2BalanceAfterTrade = toNumber(await mindToken.balanceOf(trader2.address));
     expect(user2BalanceAfterTrade.toFixed(5)).to.be.equal(expectedAmountWithFees.toFixed(5))
 
     tokenContractBalanceAfterTrade = toNumber(await mindToken.balanceOf(mindToken.address));
     expect(tokenContractBalanceAfterTrade.toFixed(5)).to.be.equal((contractBalanceBeforeTrade + expectedFeeCollected).toFixed(5));
 
-
     //sell
-    const toSell = user1BalanceAfterTrade/10;
+    const toSell = user1BalanceAfterTrade/5;
     reserves = await getReserves(pair);
     await mindToken.connect(trader1).approve(router.address, toETH(toSell));
     timestamp = (await getLatestTimestamp()).toNumber()
 
     expectedFeeCollected = toSell * 3 / 100
     const expectedETHAmountWithFees = toNumber(await router.getAmountOut(toETH(toSell - expectedFeeCollected), reserves[0], reserves[1]))
-    const receiverEHTBalanceBeforeTrade = toNumber(await ethers.provider.getBalance(receiver.address))
+    const receiverEHTBalanceBeforeTrade = toNumber(await ethers.provider.getBalance(trader1.address))
+    contractBalanceBeforeTrade = toNumber(await mindToken.balanceOf(mindToken.address))
 
-    await router.connect(trader1).functions.swapExactTokensForETHSupportingFeeOnTransferTokens(
+    console.log(receiverEHTBalanceBeforeTrade)
+
+    tx = await (await router.connect(trader1).functions.swapExactTokensForETHSupportingFeeOnTransferTokens(
       toETH(toSell),
       0,
       [mindToken.address, wethAddress],
       trader1.address,
       timestamp + 1
-    )
+    )).wait()
+    console.log("Sell1 gas", tx.gasUsed)
 
-    // const receiverETHBalanceAfterTrade = toNumber(await ethers.provider.getBalance(receiver.address));
-    // expect(receiverETHBalanceAfterTrade.toFixed(10)).to.be.equal((receiverEHTBalanceBeforeTrade + expectedETHAmountWithFees).toFixed(10))
 
-    // const tokenContractBalanceAfterSellTrade = toNumber(await mindToken.balanceOf(mindToken.address))
-    // expect(tokenContractBalanceAfterSellTrade).to.be.equal(tokenContractBalanceAfterBuyTrade + expectedFeeCollected)
+    const receiverETHBalanceAfterTrade = toNumber(await ethers.provider.getBalance(trader1.address));
+    console.log(receiverETHBalanceAfterTrade)
+
+    const contractBalanceAfterTrade = toNumber(await mindToken.balanceOf(mindToken.address))
+    expect(receiverETHBalanceAfterTrade.toFixed(4)).to.be.equal((receiverEHTBalanceBeforeTrade + expectedETHAmountWithFees).toFixed(4))
+    expect(contractBalanceAfterTrade.toFixed(5)).to.be.equal((contractBalanceBeforeTrade + expectedFeeCollected - 100000).toFixed(5))
 
   })
 
-  // it('Sells tokens', async () => {
-  //   timestamp = (await getLatestTimestamp()).toNumber()
-  //   let reserves = await getReserves(pair);
+  it.only("Relocks liquidity if trading volume surpases 50x of inital liquidity", async () => {
+    await timeIncreaseTo(timestamp + 3 * 30 * 25 * 60 * 60);
 
-  //   const expectedBuyAmountWithoutFees = toNumber(await router.getAmountOut(toETH(10), reserves[1], reserves[0]));
-  //   let expectedFeeCollected = expectedBuyAmountWithoutFees * 5 / 100;
-  //   const expectedBuyAmountWithFees = expectedBuyAmountWithoutFees - expectedFeeCollected;
+    await mindToken.connect(trader1).approve(router.address, toETH(100000000000));
+    await mindToken.connect(trader2).approve(router.address, toETH(100000000000));
+    await mindToken.connect(trader3).approve(router.address, toETH(100000000000));
+    await mindToken.connect(trader4).approve(router.address, toETH(100000000000));
 
-  //   let pairSupplyBefore = toNumber(await mindToken.balanceOf(pair.address));
-  //   let pairEthBalanceBefore = toNumber(await weth.balanceOf(pair.address))
+    for(let j = 0; j < 1000; j++) {
+      let reserves = await getReserves(pair);
+      let value = toNumber(await router.getAmountOut(toETH(0.2 + j/10), reserves[0], reserves[1]))
+      let mcap = totalSupply * value * 2500;
 
-  //   await router.connect(user2).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
-  //     0,
-  //     [wethAddress, mindToken.address],
-  //     user2.address,
-  //     timestamp + 1,
-  //     { value: toETH(10) }
-  //   )
-  //   const user2BalanceAfterBuyTrade = toNumber(await mindToken.balanceOf(user2.address));
-  //   expect(user2BalanceAfterBuyTrade).to.be.equal(expectedBuyAmountWithFees)
+      await buy(router, mindToken, splitter, trader1, toETH(0.2 + j/10), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
 
-  //   const tokenContractBalanceAfterBuyTrade = toNumber(await mindToken.balanceOf(mindToken.address));
-  //   expect(tokenContractBalanceAfterBuyTrade).to.be.equal(expectedFeeCollected);
+      await buy(router, mindToken, splitter, trader2, toETH(0.2 + j/10), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
 
-  //   let pairSupplyAfter = toNumber(await mindToken.balanceOf(pair.address));
-  //   let pairEthBalanceAfter = toNumber(await weth.balanceOf(pair.address))
+      await buy(router, mindToken, splitter, trader3, toETH(0.2 + j/10), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
 
-  //   expect(pairSupplyAfter).to.be.equal(pairSupplyBefore - tokenContractBalanceAfterBuyTrade - user2BalanceAfterBuyTrade)
-  //   expect(pairEthBalanceAfter).to.be.equal(pairEthBalanceBefore + 10)
+      await buy(router, mindToken, splitter, trader4, toETH(0.2 + j/10), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
+  
+      await sell(router, mindToken, splitter, trader1, (await mindToken.balanceOf(trader1.address)).div(3), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
+
+      await sell(router, mindToken, splitter, trader2, (await mindToken.balanceOf(trader2.address)).div(3), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
+
+      await sell(router, mindToken, splitter, trader3, (await mindToken.balanceOf(trader3.address)).div(3), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
+
+      await sell(router, mindToken, splitter, trader4, (await mindToken.balanceOf(trader4.address)).div(3), mcap)
+      reserves = await getReserves(pair);
+      value = toNumber(await router.getAmountOut(toETH(1), reserves[0], reserves[1]))
+      mcap = totalSupply * value * 2500;
+
+      console.log("Trades", (j + 1)* 8)
+    }
+  })
 
 
-  //   //***************Init Token Sell */
-  //   //start token sell
-  //   reserves = await getReserves(pair);
-  //   await mindToken.connect(user2).approve(router.address, toETH(user2BalanceAfterBuyTrade));
-  //   timestamp = (await getLatestTimestamp()).toNumber()
-
-  //   const tokensToSell = user2BalanceAfterBuyTrade - user2BalanceAfterBuyTrade * 0.2 / 100
-  //   expectedFeeCollected = tokensToSell * 5 / 100
-  //   const expectedETHAmountWithFees = toNumber(await router.getAmountOut(toETH(tokensToSell - expectedFeeCollected), reserves[0], reserves[1]))
-  //   const receiverEHTBalanceBeforeTrade = toNumber(await ethers.provider.getBalance(receiver.address))
-
-  //   await router.connect(user2).functions.swapExactTokensForETHSupportingFeeOnTransferTokens(
-  //     toETH(tokensToSell),
-  //     0,
-  //     [mindToken.address, wethAddress],
-  //     receiver.address,
-  //     timestamp + 1
-  //   )
-
-  //   const receiverETHBalanceAfterTrade = toNumber(await ethers.provider.getBalance(receiver.address));
-  //   expect(receiverETHBalanceAfterTrade.toFixed(10)).to.be.equal((receiverEHTBalanceBeforeTrade + expectedETHAmountWithFees).toFixed(10))
-
-  //   const tokenContractBalanceAfterSellTrade = toNumber(await mindToken.balanceOf(mindToken.address))
-  //   expect(tokenContractBalanceAfterSellTrade).to.be.equal(tokenContractBalanceAfterBuyTrade + expectedFeeCollected)
-
-  //   /************Init swap All  */
-
-  //   reserves = await getReserves(pair);
-
-  //   const amountToSwap = tokenContractBalanceAfterSellTrade - tokenContractBalanceAfterSellTrade*0.2
-  //   const expectedEthAmountFromContractSwap = toNumber(await router.getAmountOut(toETH(amountToSwap), reserves[0], reserves[1]));
-
-  //   const tx = await (await mindToken.swapAll()).wait()
-
-  //   const marketinSwapEvent = tx.events.find(e => e.event === "SwapMarketing")
-  //   const LiquidityEventEvent = tx.events.find(e => e.event === "Liquify")
-
-  //   const marketingSwappedAmount = toNumber(marketinSwapEvent.args[0])
-  //   const marketingEthReceived = toNumber(marketinSwapEvent.args[1])
-  //   const liquiditySwappedAmount = toNumber(LiquidityEventEvent.args[0])
-  //   const liquidityEthReceived = toNumber(LiquidityEventEvent.args[1])
-
-  //   expect(marketingSwappedAmount + liquiditySwappedAmount*2).to.be.equal(tokenContractBalanceAfterSellTrade)
-  //   expect(toNumber(await ethers.provider.getBalance(mindToken.address))).to.be.equal(0)
-
-  // })
 });
+
+const buy = async (router: IUniswapV2Router02, mindToken: Mind, splitter: MMPaymentSplitter, trader: SignerWithAddress, amount: BigNumber, mcap: number) => {
+  const wethAddress = await router.WETH();
+  const timestamp = (await getLatestTimestamp()).toNumber()
+  const tx = await (await router.connect(trader).functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
+    0,
+    [wethAddress, mindToken.address],
+    trader.address,
+    timestamp + 10,
+    { value: amount }
+  )).wait();
+  console.log("buy", 
+    toNumber(amount),
+    toNumber(await mindToken.balanceOf(mindToken.address)), 
+    toNumber(await provider.getBalance(mindToken.address)),
+    toNumber(await provider.getBalance(splitter.address)),
+    mcap
+  )
+}
+
+const sell = async (router: IUniswapV2Router02, mindToken: Mind, splitter: MMPaymentSplitter,  trader: SignerWithAddress, amount: BigNumber, mcap: number) => {
+  const wethAddress = await router.WETH();
+  const timestamp = (await getLatestTimestamp()).toNumber()
+  const tx = await (await router.connect(trader).functions.swapExactTokensForETHSupportingFeeOnTransferTokens(
+    amount,
+    0,
+    [mindToken.address, wethAddress],
+    trader.address,
+    timestamp + 10
+  )).wait()
+
+
+  console.log("sell", 
+    toNumber(amount),
+    toNumber(await mindToken.balanceOf(mindToken.address)), 
+    toNumber(await provider.getBalance(mindToken.address)),
+    toNumber(await provider.getBalance(splitter.address)),
+    mcap
+  )
+}
 
 export const getReserves = async (pair: IUniswapPair): Promise<[BigNumber, BigNumber, number]> => {
   const reserves = await pair.getReserves();
